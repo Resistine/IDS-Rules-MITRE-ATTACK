@@ -2,6 +2,7 @@
 enterprise-attack/
 snortparser/
 snort3-community-rules/
+et-open-rules/
 rules_parsed.csv
 
 # Mac and other BS

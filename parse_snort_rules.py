@@ -7,19 +7,30 @@ import os.path
 import os
 import urllib.request
 import tarfile
+import zipfile
+import re
 import pandas as pd
 import ast
 
-# Ensure the project root is on sys.path so local packages (snortparser) can be imported
-# when this script is executed from the `Snort-Rules` directory.
+# Ensure the project root and current script directory are on sys.path
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+CUR_DIR = os.path.abspath(os.path.dirname(__file__))
+if CUR_DIR not in sys.path:
+    sys.path.insert(0, CUR_DIR)
 
 from snortparser import Parser, Dicts
 #from SRParser import SnortParser
 import mitreattack.attackToExcel.attackToExcel as attackToExcel
+
+# Support extended protocols used in Suricata and Emerging Threats rules
+_orig_proto = getattr(Parser, 'proto', None)
+def _extended_proto(proto: str) -> str:
+    return proto
+
+Parser.proto = staticmethod(_extended_proto)
 
 
 # Constants
@@ -142,6 +153,33 @@ if (not os.path.exists(RULES)):
     except Exception as e:
         print("Exception while downloading Snort rules: "+ str(e))
 
+# download the ProofPoint Emerging Threats rules if they do not exist
+if (not os.path.exists(ET_RULES)):
+    try:
+        if (not os.path.isdir(ET_DIR)): os.makedirs(ET_DIR)
+        et_zip = os.path.join(ET_DIR, "emerging.rules.zip")
+        print("Downloading ProofPoint Emerging Threats rules...")
+        urllib.request.urlretrieve(ET_LINK, et_zip)
+        
+        print("Extracting ProofPoint Emerging Threats rules...")
+        with zipfile.ZipFile(et_zip, "r") as zf:
+            zf.extractall(ET_DIR)
+        
+        # Consolidate all rule files into ET_RULES if under rules/ subdirectory
+        rules_subdir = os.path.join(ET_DIR, "rules")
+        if os.path.isdir(rules_subdir):
+            rule_files = [os.path.join(rules_subdir, f) for f in os.listdir(rules_subdir) if f.endswith(".rules")]
+            rule_files.sort()
+            with open(ET_RULES, "w", encoding="utf-8", errors="ignore") as outfile:
+                for r_file in rule_files:
+                    with open(r_file, "r", encoding="utf-8", errors="ignore") as infile:
+                        outfile.write(infile.read())
+                        outfile.write("\n")
+        print("ProofPoint Emerging Threats rules downloaded and prepared.")
+
+    except Exception as e:
+        print("Exception while downloading ProofPoint Emerging Threats rules: "+ str(e))
+
 
 
 # Helper function to get the connection/attack direction (inbound/outbound) from the parsed rule and return it.
@@ -159,9 +197,13 @@ def get_direction(source, arrow, destination):
         return None
 
     # FIXME: add more cases for the source and destination
-    #normalizing strings withput .strip
-    source = source.replace(" ", "")
-    destination = destination.replace(" ", "")
+    # normalizing strings
+    if isinstance(source, (list, tuple)):
+        source = str(source)
+    if isinstance(destination, (list, tuple)):
+        destination = str(destination)
+    source = str(source).replace(" ", "")
+    destination = str(destination).replace(" ", "")
     #easier readability
     HOME = "$HOME_NET"
     EXTERNAL = "$EXTERNAL_NET"
@@ -220,138 +262,103 @@ def get_option(parsed, string):
     return None
 
 
-# open output file for writing, not appending and write the header ...
-with open(CSVFILE, 'w') as csv_rules:
-    csv_rules.write(','.join(COLUMNS) + '\n')
+def parse_rule_to_df(rule):
+    '''Parse a single IDS rule into a pandas DataFrame row.'''
+    rule_clean = re.sub(r'\[([0-9a-fA-F.:]+)\]', r'\1', rule)
+    parsed = Parser(rule_clean)
+    # get options for easier coding      
+    sid = get_option(parsed, 'sid')[1][0] if get_option(parsed, 'sid') else pd.NA
+    proto = parsed.header.get('proto', pd.NA)
+    source = parsed.header['source'][1] if parsed.header.get('source') else pd.NA
+    src_port = parsed.header['src_port'][1] if parsed.header.get('src_port') else pd.NA
+    arrow = parsed.header.get('arrow', pd.NA)
+    destination = parsed.header['destination'][1] if parsed.header.get('destination') else pd.NA
+    dst_port = parsed.header['dst_port'][1] if parsed.header.get('dst_port') else pd.NA
+    classtype = get_option(parsed, 'classtype')[1][0] if get_option(parsed, 'classtype') else pd.NA
+    msg = get_option(parsed, 'msg')[1][0] if get_option(parsed, 'msg') else pd.NA
+    reference = get_option(parsed, 'reference')[1] if get_option(parsed, 'reference') else pd.NA
 
-    # open input file
-    with open(RULES) as snort_rules:
-        
-        # for each line (rule)
-        for rule in snort_rules:
-           
-            # try to parse the rule
-            try:
-                parsed = Parser(rule)
-                #get options for easier coding      
-                sid =get_option(parsed,'sid')[1][0] if get_option(parsed,'sid') else pd.NA
-                proto= parsed.header.get('proto',pd.NA)
-                source= parsed.header['source'][1] if parsed.header.get('source') else pd.NA
-                src_port= parsed.header['src_port'][1] if parsed.header.get('src_port') else pd.NA
-                arrow= parsed.header.get('arrow',pd.NA)
-                destination= parsed.header['destination'][1] if parsed.header.get('destination') else pd.NA
-                dst_port=parsed.header['dst_port'][1] if parsed.header.get('dst_port') else pd.NA
-                classtype=get_option(parsed,'classtype')[1][0] if get_option(parsed,'classtype') else pd.NA
-                msg=get_option(parsed,'msg')[1][0] if get_option(parsed,'msg') else pd.NA
-                reference= get_option(parsed,'reference')[1] if get_option(parsed,'reference') else pd.NA
+    # initialize df
+    df = pd.DataFrame([[sid, proto, source, src_port, arrow, destination, dst_port, classtype,
+        pd.NA, pd.NA, pd.NA, pd.NA, pd.NA, pd.NA, pd.NA, pd.NA, pd.NA, pd.NA, msg, reference]], columns=COLUMNS, dtype=str)
 
-                #initialize df
-                df = pd.DataFrame([[sid, proto, source, src_port, arrow, destination, dst_port, classtype,
-                    pd.NA, pd.NA, pd.NA, pd.NA, pd.NA, pd.NA, pd.NA, pd.NA, pd.NA, pd.NA,msg, reference]],columns=COLUMNS, dtype=str)
+    # add the inbound/outbound directions
+    direction = get_direction(source, arrow, destination)
+    df['direction'] = direction
+
+    # switch TActics -- first the specific one, then the generic one
+    if (direction == INBOUND):
+        df['TActic'] = df['TA_inb'] = get_TActic(classtype, 'TA_inb')
+    elif (direction == LATERAL):
+        df['TActic'] = df['TA_lat'] = get_TActic(classtype, 'TA_lat')
+    elif (direction == OUTBOUND):
+        df['TActic'] = df['TA_out'] = get_TActic(classtype, 'TA_out')
+    else: # if the direction is not defined, then try to get the default TActic from the mappings
+        df['TActic'] = get_TActic(classtype, 'TActic')
+
+    # parse techniques from references
+    # `reference` may be a pandas NA, a string representation of a list, or already a list/sequence.
+    if reference is not pd.NA:
+        try:
+            # normalize to a Python list of strings
+            if isinstance(reference, str):
+                ref_list = ast.literal_eval(reference)
+                if not isinstance(ref_list, (list, tuple)):
+                    ref_list = [ref_list]
+            elif isinstance(reference, pd.Series):
+                ref_list = reference.tolist()
+            elif isinstance(reference, (list, tuple)):
+                ref_list = list(reference)
+            else:
+                # fallback: wrap single value
+                ref_list = [reference]
+
+            s = pd.Series(ref_list)
+            # filter only MITRE technique URLs
+            s = s[s.str.startswith('attack.mitre.org/techniques/')]
+            if not s.empty:
+                # take the first technique for now
+                technique_id = s.iloc[0].replace('attack.mitre.org/techniques/', '')
+                df['Technique'] = technique_id
+                df['Tname'] = Tes.loc[Tes['ID'] == technique_id, 'name'].iloc[0] if not Tes.loc[Tes['ID'] == technique_id, 'name'].empty else pd.NA
+        except Exception as e:
+            print(f"Warning: could not parse reference for rule {sid}: {e}")
+
+    return df
 
 
-                # Create a DataFrame with a single row of the parsed data
-                # TODO: convert proper to string https://stackoverflow.com/questions/22005911/convert-columns-to-string-in-pandas#62978895
-                #df = pd.DataFrame([[
-                #    get_option(parsed, 'sid')[1][0],
-                #    parsed.header['proto'],
-                #    parsed.header['source'][1] if parsed.header['source'] else pd.NA,
-                #    parsed.header['src_port'][1] if parsed.header['src_port'] else pd.NA,
-                #    parsed.header['arrow'],
-                #    parsed.header['destination'][1] if parsed.header['destination'] else pd.NA,
-                #    parsed.header['dst_port'][1] if parsed.header['dst_port'] else pd.NA,
-                #    get_option(parsed, 'classtype')[1][0],
-                #    pd.NA, # 'inbound' or 'outbound'
-                #    pd.NA, # 'TActic' -- this is the most important to be added
-                #    pd.NA, # 'Technique' -- this is the second most important to be added
-                #    pd.NA, # 'Tname' -- the Technique name from MITRE ATT&CK Excel file
-                #    pd.NA, # 'TA_inb' -- inbounds TActic
-                #    pd.NA, # 'T_inb' -- inbounds Technique (black magic here!)
-                #    pd.NA, # 'TA_lat' -- lateral TActic
-                #    pd.NA, # 'T_lat' -- lateral Technique (black magic here!)
-                #    pd.NA, # 'TA_out' -- outbounds TActic
-                #    pd.NA, # 'T_out' -- outbounds Technique (black magic here!)
-                #    get_option(parsed, 'msg')[1][0],
-                #    get_option(parsed, 'reference')[1] if get_option(parsed, 'reference') else pd.NA
-                #]], columns=COLUMNS, dtype=str)
-                
-                # add the inbound/outbound directions
-                # TODO: add some check after the Snort rule header is malformed ['alert', 'ssl'] is fixed
-                direction = get_direction(source, arrow, destination)
-                df['direction'] = direction
+if __name__ == "__main__":
+    RULE_FILES = [RULES, ET_RULES]
 
-                # switch TActics -- first the specific one, then the generic one
-                #classtype = df['classtype'][0]
-                if (direction == INBOUND):
-                    df['TActic'] = df['TA_inb'] = get_TActic(classtype, 'TA_inb')
-                elif (direction == LATERAL):
-                    df['TActic'] = df['TA_lat'] = get_TActic(classtype, 'TA_lat')
-                elif (direction == OUTBOUND):
-                    df['TActic'] = df['TA_out'] = get_TActic(classtype, 'TA_out')
-                else: # if the direction is not defined, then try to get the default TActic from the mappings
-                    df['TActic'] = get_TActic(classtype, 'TActic')
+    # open output file for writing, not appending and write the header ...
+    with open(CSVFILE, 'w') as csv_rules:
+        csv_rules.write(','.join(COLUMNS) + '\n')
 
-                # parse techniques from references
-                # `reference` may be a pandas NA, a string representation of a list, or already a list/sequence.
-                if reference is not pd.NA:
+        for rules_path in RULE_FILES:
+            if not os.path.exists(rules_path):
+                print(f"Warning: rules file not found: {rules_path}")
+                continue
+
+            print(f"Parsing rules from: {rules_path}")
+            # open input file
+            with open(rules_path, 'r', encoding='utf-8', errors='ignore') as snort_rules:
+                # for each line (rule)
+                for rule in snort_rules:
+                    rule = rule.strip()
+                    if not rule or rule.startswith('#'):
+                        continue
+
+                    # try to parse the rule
                     try:
-                        # normalize to a Python list of strings
-                        if isinstance(reference, str):
-                            ref_list = ast.literal_eval(reference)
-                            if not isinstance(ref_list, (list, tuple)):
-                                ref_list = [ref_list]
-                        elif isinstance(reference, pd.Series):
-                            ref_list = reference.tolist()
-                        elif isinstance(reference, (list, tuple)):
-                            ref_list = list(reference)
-                        else:
-                            # fallback: wrap single value
-                            ref_list = [reference]
+                        df = parse_rule_to_df(rule)
+                        # print the Pandas DataFrame to the output file
+                        csv_rules.write(df.to_csv(index=False, header=False))
 
-                        s = pd.Series(ref_list)
-                        # filter only MITRE technique URLs
-                        s = s[s.str.startswith('attack.mitre.org/techniques/')]
-                        if not s.empty:
-                            # take the first technique for now
-                            technique_id = s.iloc[0].replace('attack.mitre.org/techniques/', '')
-                            df['Technique'] = technique_id
-                            df['Tname'] = Tes.loc[Tes['ID'] == technique_id, 'name'].iloc[0] if not Tes.loc[Tes['ID'] == technique_id, 'name'].empty else pd.NA
+                    # NOTE: If the snortparser is unable to parse the rule, it will return a ValueError with the invalid rule item.
                     except Exception as e:
-                        print(f"Warning: could not parse reference for rule {sid}: {e}")
+                        print("Exception: "+ str(e))
+                        print(traceback.format_exc())
+                        print(rule)
 
-                # finally, add and check the Techniques present as string ['url', 'attack.mitre.org/techniques/T1014']
-                #if (pd.notna(reference)):
-                #    list_from_string = ast.literal_eval(reference)
-                #    s = pd.Series(list_from_string)
-
-                    # Create a mask for items that start with the specified string
-                #    mask = s.str.startswith('attack.mitre.org/techniques/')
-                    # remove the elements that don't match the mask
-                #    s = s[mask]
-
-                    # remove the specified string from the start of the strings
-                #    if (len(s) > 0):
-                #        s[mask] = s[mask].str.replace('attack.mitre.org/techniques/', '', n=1)
-                        # get just the elements that match the mask and its name from the MITRE ATT&CK Excel file
-
-                        df['Technique'] = s[1]
-                        
-                        # Safe lookup for Tname
-                        tname_lookup = Tes.loc[Tes['ID'] == s[1], "name"]
-                        if not tname_lookup.empty:
-                            df['Tname'] = tname_lookup.iloc[0]
-                        else:
-                            print(f"Warning: Technique ID {s[1]} not found in MITRE ATT&CK data.")
-
-                # print the Pandas DataFrame to the output file
-                csv_rules.write(df.to_csv(index=False, header=False))
-                # print(df)
-
-            # NOTE: If the snortparser is unable to parse the rule, it will return a ValueError with the invalid rule item.
-            except Exception as e:
-                print("Exception: "+ str(e))
-                print(traceback.format_exc())
-                print(rule)
-
-# Hooraay! We are done
-print('There you are: '+ CSVFILE)
+    # Hooraay! We are done
+    print('There you are: '+ CSVFILE)

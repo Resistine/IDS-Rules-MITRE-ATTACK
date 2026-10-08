@@ -22,6 +22,9 @@ It downloads the latest MITRE ATT&CK matrix and creates the Excel files \
 And the latest Snort Community Rules \
 (delete the *snort3-community-rules* directory to update it)
 
+And the latest ProofPoint Emerging Threats Open Rules \
+(delete the *et-open-rules* directory to update it)
+
 ### Check
 The result will be in ***rules_parsed.csv*** file.
 
