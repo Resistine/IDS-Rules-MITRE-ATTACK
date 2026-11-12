@@ -25,6 +25,12 @@ And the latest Snort Community Rules \
 And the latest ProofPoint Emerging Threats Open Rules \
 (delete the *et-open-rules* directory to update it)
 
+### Rule Parsing & Compatibility
+
+Modern Suricata (Emerging Threats) and Snort 3 rules include syntax not supported by default in legacy `snortparser`:
+1. **Rule Options Bypass:** Default `snortparser` strictly validates options against a hardcoded Snort 2 whitelist. Modern options like `target`, `app-layer-event`, and `tcp.flags` are accepted via runtime option-validation bypass.
+2. **Lenient IP Network Validation:** Third-party rulesets occasionally include CIDRs where host bits are set within the network prefix (e.g. `108.160.162.0/20` in SID 2012647). Python's `ipaddress.ip_network` is configured with `strict=False` to automatically mask host bits and parse 100% of the ruleset without crashing.
+
 ### Check
 The result will be in ***rules_parsed.csv*** file.
 
