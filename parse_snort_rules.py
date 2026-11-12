@@ -21,9 +21,13 @@ CUR_DIR = os.path.abspath(os.path.dirname(__file__))
 if CUR_DIR not in sys.path:
     sys.path.insert(0, CUR_DIR)
 
-from snortparser import Parser, Dicts
+sys.path.insert(0, os.path.abspath("../IDS-Rules-Parser-project"))
+from snortparser import Parser
+from snortparser import Dicts
 #from SRParser import SnortParser
 import mitreattack.attackToExcel.attackToExcel as attackToExcel
+
+import ipaddress
 
 # Support extended protocols used in Suricata and Emerging Threats rules
 _orig_proto = getattr(Parser, 'proto', None)
@@ -31,6 +35,13 @@ def _extended_proto(proto: str) -> str:
     return proto
 
 Parser.proto = staticmethod(_extended_proto)
+# Disable strict option validation so modern Suricata and Snort 3 options are accepted
+Parser.validate_options = lambda self, options: options
+
+# Allow CIDRs with host bits set (e.g. 108.160.162.0/20) by setting strict=False
+_orig_ip_network = ipaddress.ip_network
+ipaddress.ip_network = lambda address, strict=False: _orig_ip_network(address, strict=False)
+
 
 
 # Constants
@@ -318,7 +329,7 @@ def parse_rule_to_df(rule):
             s = s[s.str.startswith('attack.mitre.org/techniques/')]
             if not s.empty:
                 # take the first technique for now
-                technique_id = s.iloc[0].replace('attack.mitre.org/techniques/', '')
+                technique_id = s.iloc[0].replace('attack.mitre.org/techniques/', '').strip('/') #removes tailing slash if there is one
                 df['Technique'] = technique_id
                 df['Tname'] = Tes.loc[Tes['ID'] == technique_id, 'name'].iloc[0] if not Tes.loc[Tes['ID'] == technique_id, 'name'].empty else pd.NA
         except Exception as e:
